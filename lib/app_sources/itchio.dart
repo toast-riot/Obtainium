@@ -1,9 +1,12 @@
 import 'dart:convert';
 import 'package:easy_localization/easy_localization.dart';
-import 'package:html/dom.dart';
+import 'package:html/dom.dart' as dom;
+import 'package:obtainium/components/generated_form.dart';
 import 'package:obtainium/custom_errors.dart';
 import 'package:obtainium/providers/source_provider.dart';
 import 'package:html/parser.dart';
+import 'package:url_launcher/url_launcher_string.dart';
+import 'package:flutter/material.dart';
 
 /// AppSource implementation for itch.io.
 ///
@@ -15,6 +18,33 @@ class ItchIO extends AppSource {
     hosts = ['itch.io'];
     name = 'itch.io';
     allowSubDomains = true;
+    sourceConfigSettingFormItems = [
+      GeneratedFormTextField(
+        'itchio-creds',
+        label: tr('itchioAPIKeyLabel'),
+        password: true,
+        required: false,
+        belowWidgets: [
+          const SizedBox(height: 4),
+          InkWell(
+            onTap: () {
+              launchUrlString(
+                'https://itch.io/user/settings/api-keys',
+                mode: LaunchMode.externalApplication,
+              );
+            },
+            child: Text(
+              tr('about'),
+              style: const TextStyle(
+                decoration: TextDecoration.underline,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+        ],
+      ),
+    ];
   }
 
   @override
@@ -69,12 +99,12 @@ class ItchIO extends AppSource {
     List<(String, String, bool)> downloads = [];
 
     // It seems that in every spot, the download buttons are in this container.
-    List<Element> uploadDivs = parser.querySelectorAll('div.upload');
+    List<dom.Element> uploadDivs = parser.querySelectorAll('div.upload');
 
     if (uploadDivs.isNotEmpty) {
       for (var uploadDiv in uploadDivs) {
         // Extract the file ID
-        Element? nameDiv = uploadDiv.querySelector(
+        dom.Element? nameDiv = uploadDiv.querySelector(
           'div.upload_name strong.name',
         );
         String uploadName = nameDiv?.attributes['title'] ?? 'App title';
@@ -104,7 +134,7 @@ class ItchIO extends AppSource {
   ///
   /// This method has room for improvement; however, there is no defined
   /// standard on itch.io for declaring assets versions.
-  String? _parseVersion(Document document) {
+  String? _parseVersion(dom.Document document) {
     // Limit our search to specific areas.
     // In the main page, use the section for the game information.
     String searchArea = document.querySelector("div.page_widget")!.innerHtml;
@@ -145,9 +175,9 @@ class ItchIO extends AppSource {
   }
 
   /// Extracts the "Updated" date and formats it as YYYYMMDD for versioning.
-  String? _getDateVersion(Document document) {
+  String? _getDateVersion(dom.Document document) {
     // Check if we have any "abbr" dates. If now exit early.
-    List<Element> abbrElements = document.querySelectorAll('abbr');
+    List<dom.Element> abbrElements = document.querySelectorAll('abbr');
     if (abbrElements.isEmpty) return null;
 
     DateFormat abbrTimeFormat = DateFormat("dd MMMM yyyy '@' HH:mm 'UTC'");
@@ -169,9 +199,9 @@ class ItchIO extends AppSource {
   }
 
   /// Extracts the app title from the page title.
-  String _parseTitle(Document document) {
+  String _parseTitle(dom.Document document) {
     String? title;
-    Element titleElement = document.getElementsByTagName('title')[0];
+    dom.Element titleElement = document.getElementsByTagName('title')[0];
     title = titleElement.text;
     // The title is in format: GAMENAME by GAMEAUTHOR
     // Then, get just the first part
@@ -180,8 +210,8 @@ class ItchIO extends AppSource {
   }
 
   /// Resolves the app author from subdomain or author span.
-  String _parseAuthor(Document document, String standardUrl) {
-    Element? followSpan = document.querySelector(
+  String _parseAuthor(dom.Document document, String standardUrl) {
+    dom.Element? followSpan = document.querySelector(
       'span.on_follow span.full_label',
     );
     var authorMatch = RegExp(r'Follow (.+)').firstMatch(followSpan!.text);
@@ -240,7 +270,7 @@ class ItchIO extends AppSource {
           ...additionalSettings,
           'extraHeaders': {
             'X-Requested-With': 'XMLHttpRequest',
-            if (cookies != null) 'Cookie': cookies,
+            'Cookie': ?cookies,
           },
         },
         postBody: {'csrf_token': csrfToken},
@@ -252,7 +282,7 @@ class ItchIO extends AppSource {
           // We are now in GAME_URL/download/HASH
           var downloadPageRes = await sourceRequest(tokenizedUrl, {
             ...additionalSettings,
-            'extraHeaders': {if (cookies != null) 'Cookie': cookies},
+            'extraHeaders': {'Cookie': ?cookies},
           });
           if (downloadPageRes.statusCode == 200) {
             // We are now at the download page, with shiny buttons
@@ -286,7 +316,7 @@ class ItchIO extends AppSource {
     );
 
     // Metadata extraction
-    Document storePage = parse(body);
+    dom.Document storePage = parse(body);
     String title = _parseTitle(storePage);
     String author = _parseAuthor(storePage, standardUrl);
     String? dateVersion = _getDateVersion(storePage);
@@ -302,7 +332,7 @@ class ItchIO extends AppSource {
     );
 
     // Fetch better version from the download page, if any
-    Document downloadPage = parse(downloadPageBody);
+    dom.Document downloadPage = parse(downloadPageBody);
     dateVersion ??= _getDateVersion(downloadPage);
     version ??= _parseVersion(downloadPage);
 
@@ -367,7 +397,7 @@ class ItchIO extends AppSource {
         'extraHeaders': {
           'X-Requested-With': 'XMLHttpRequest',
           'Referer': '$baseUrl/download/$uploadId',
-          if (cookies != null) 'Cookie': cookies,
+          'Cookie': ?cookies,
         },
       },
       postBody: {'csrf_token': csrfToken},

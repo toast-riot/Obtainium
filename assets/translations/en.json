@@ -17,6 +17,7 @@
     "ok": "Okay",
     "and": "and",
     "githubPATLabel": "GitHub personal access token (increases rate limit)",
+    "itchioAPIKeyLabel": "itch.io API key",
     "includePrereleases": "Include prereleases",
     "fallbackToOlderReleases": "Fallback to older releases",
     "filterReleaseTitlesByRegEx": "Filter release titles by regular expression",
