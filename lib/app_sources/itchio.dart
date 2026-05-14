@@ -174,6 +174,7 @@ class ItchIO extends AppSource {
   }
 }
 
+
 class _ItchIoApiClient {
   static Future<APKDetails?> tryGetLatestAPKDetails({
     required String standardUrl,
@@ -200,6 +201,7 @@ class _ItchIoApiClient {
     return null;
   }
 }
+
 
 class _ItchIoWebScraper {
   /// Extracts the CSRF token from the page body (either from an input or JSON).
@@ -365,6 +367,7 @@ class _ItchIoWebScraper {
     String? initialCsrfToken,
     String? initialCookies,
   ) async {
+    // Start the setup
     final String baseUrl = standardUrl.replaceAll(RegExp(r'/$'), '');
     var currentBody = initialBody;
 
@@ -595,6 +598,8 @@ class _ItchIoWebScraper {
       null,
     );
 
-    return cloudFlareUrl;
+    if (cloudFlareUrl != null) return cloudFlareUrl;
+
+    return assetUrl;
   }
 }
