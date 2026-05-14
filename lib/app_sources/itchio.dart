@@ -87,51 +87,21 @@ class ItchIO extends AppSource {
     return apiKey != null && apiKey.isNotEmpty ? apiKey : null;
   }
 
-  Future<APKDetails?> _getLatestAPKDetailsViaApi(
-    String standardUrl,
-    Map<String, dynamic> additionalSettings,
-  ) async {
-    final apiKey = await _getApiKeyIfAny(additionalSettings);
-    if (apiKey == null) {
-      return null;
-    }
-
-    return await _ItchIoApiClient.tryGetLatestAPKDetails(
-      standardUrl: standardUrl,
-      apiKey: apiKey,
-      additionalSettings: additionalSettings,
-    );
-  }
-
-  Future<String?> _resolveAssetUrlViaApi(
-    String assetUrl,
-    String standardUrl,
-    Map<String, dynamic> additionalSettings,
-  ) async {
-    final apiKey = await _getApiKeyIfAny(additionalSettings);
-    if (apiKey == null) {
-      return null;
-    }
-
-    return await _ItchIoApiClient.tryResolveAssetUrl(
-      assetUrl: assetUrl,
-      standardUrl: standardUrl,
-      apiKey: apiKey,
-      additionalSettings: additionalSettings,
-    );
-  }
-
   @override
   Future<APKDetails> getLatestAPKDetails(
     String standardUrl,
     Map<String, dynamic> additionalSettings,
   ) async {
-    final apiDetails = await _getLatestAPKDetailsViaApi(
-      standardUrl,
-      additionalSettings,
-    );
-    if (apiDetails != null) {
-      return apiDetails;
+    final apiKey = await _getApiKeyIfAny(additionalSettings);
+    if (apiKey != null) {
+      final apiDetails = await _ItchIoApiClient.tryGetLatestAPKDetails(
+        standardUrl: standardUrl,
+        apiKey: apiKey,
+        additionalSettings: additionalSettings,
+      );
+      if (apiDetails != null) {
+        return apiDetails;
+      }
     }
 
     return await _ItchIoWebScraper.tryGetLatestAPKDetails(
@@ -151,14 +121,18 @@ class ItchIO extends AppSource {
     String standardUrl,
     Map<String, dynamic> additionalSettings,
   ) async {
-    final apiUrl = await _resolveAssetUrlViaApi(
-      assetUrl,
-      standardUrl,
-      additionalSettings,
-    );
-    if (apiUrl != null) {
-      return apiUrl;
-    }
+    // final apiKey = await _getApiKeyIfAny(additionalSettings);
+    // if (apiKey != null) {
+    //   final apiUrl = await _ItchIoApiClient.tryResolveAssetUrl(
+    //     assetUrl: assetUrl,
+    //     standardUrl: standardUrl,
+    //     apiKey: apiKey,
+    //     additionalSettings: additionalSettings,
+    //   );
+    //   if (apiUrl != null) {
+    //     return apiUrl;
+    //   }
+    // }
 
     final cloudFlareUrl = await _ItchIoWebScraper.tryResolveAssetUrl(
       this,
@@ -559,7 +533,7 @@ class _ItchIoWebScraper {
     if (directUrl == null) return null;
 
     final String baseUrl = standardUrl.replaceAll(RegExp(r'/$'), '');
-    var streamRes = await source.sourceRequestStreamResponse('GET', directUrl, {
+    var streamRes = await sourceRequestStreamResponse('GET', directUrl, {
       'Referer': '$baseUrl?download',
     }, additionalSettings);
 
