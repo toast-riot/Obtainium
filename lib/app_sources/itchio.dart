@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:obtainium/components/generated_form.dart';
@@ -73,6 +74,10 @@ class ItchIO extends AppSource {
         Map<String, String>.from(additionalSettings['extraHeaders']),
       );
     }
+    final apiKey = await _getApiKeyIfAny(additionalSettings);
+    if (apiKey != null && url.startsWith('https://api.itch.io/')) {
+      headers[HttpHeaders.authorizationHeader] = apiKey;
+    }
     return headers.isNotEmpty ? headers : null;
   }
 
@@ -95,6 +100,7 @@ class ItchIO extends AppSource {
     final apiKey = await _getApiKeyIfAny(additionalSettings);
     if (apiKey != null) {
       final apiDetails = await _ItchIoApiClient.tryGetLatestAPKDetails(
+        source: this,
         standardUrl: standardUrl,
         apiKey: apiKey,
         additionalSettings: additionalSettings,
@@ -121,18 +127,19 @@ class ItchIO extends AppSource {
     String standardUrl,
     Map<String, dynamic> additionalSettings,
   ) async {
-    // final apiKey = await _getApiKeyIfAny(additionalSettings);
-    // if (apiKey != null) {
-    //   final apiUrl = await _ItchIoApiClient.tryResolveAssetUrl(
-    //     assetUrl: assetUrl,
-    //     standardUrl: standardUrl,
-    //     apiKey: apiKey,
-    //     additionalSettings: additionalSettings,
-    //   );
-    //   if (apiUrl != null) {
-    //     return apiUrl;
-    //   }
-    // }
+    final apiKey = await _getApiKeyIfAny(additionalSettings);
+    if (apiKey != null) {
+      final apiUrl = await _ItchIoApiClient.tryResolveAssetUrl(
+        source: this,
+        assetUrl: assetUrl,
+        standardUrl: standardUrl,
+        apiKey: apiKey,
+        additionalSettings: additionalSettings,
+      );
+      if (apiUrl != null) {
+        return apiUrl;
+      }
+    }
 
     final cloudFlareUrl = await _ItchIoWebScraper.tryResolveAssetUrl(
       this,
@@ -149,8 +156,136 @@ class ItchIO extends AppSource {
 }
 
 
+class _Common {
+  // TODO: test
+  static String _uploadIdFromAssetUrl(String assetUrl) {
+    String uploadId = assetUrl.split('/').last; // TODO: see if this works, if it's not robust try the method below
+    if (uploadId.isEmpty) {
+      throw FormatException('Invalid asset URL format: $assetUrl');
+    }
+    return uploadId;
+
+    // try {
+    //   final uri = Uri.parse(assetUrl);
+    //   if (uri.scheme == 'itchio-upload') {
+    //     return uri.host.isNotEmpty ? uri.host : uri.pathSegments.isNotEmpty ? uri.pathSegments.last : null;
+    //   }
+    //   final match = RegExp(r'/upload/(\d+)(?:/download)?$').firstMatch(uri.path);
+    //   if (match != null) {
+    //     return match.group(1);
+    //   }
+    // } catch (_) {
+    //   // Ignore and fall back to the regex below.
+    // }
+    // final fallbackMatch = RegExp(r'(\d+)$').firstMatch(assetUrl);
+    // return fallbackMatch?.group(1);
+  }
+}
+
 class _ItchIoApiClient {
+  static Map<String, dynamic>? _asMap(dynamic value) {
+    return value is Map ? Map<String, dynamic>.from(value) : null;
+  }
+
+  static List<Map<String, dynamic>> _asUploads(dynamic value) {
+    if (value is Map<String, dynamic> && value['uploads'] is List) {
+      return (value['uploads'] as List)
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    }
+    if (value is List) {
+      return value.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    }
+    return [];
+  }
+
+  static DateTime? _parseDate(dynamic value) {
+    if (value == null) return null;
+    try {
+      return DateTime.parse(value.toString());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String? _firstString(Map<String, dynamic>? map, List<String> keys) {
+    if (map == null) return null;
+    for (var key in keys) {
+      var value = map[key];
+      if (value != null) {
+        var text = value.toString();
+        if (text.isNotEmpty) {
+          return text;
+        }
+      }
+    }
+    return null;
+  }
+
+  // TODO: can obtainium handle .zip and .xapk?
+  static bool _isAndroidUpload(Map<String, dynamic> upload) {
+    final filename = _firstString(upload, ['filename'])?.toLowerCase() ?? '';
+    if (!(filename.endsWith('.apk') || filename.endsWith('.xapk') || filename.endsWith('.zip'))) {
+      return false;
+    }
+    final traits = upload['traits'];
+    if (traits is List && traits.any((e) => e?.toString() == 'p_android')) {
+      return true;
+    }
+    return false;
+  }
+
+  static String? _extractGameIdFromDataJson(dynamic dataJson) {
+    final data = _asMap(dataJson);
+    return data?['id']?.toString();
+  }
+
+  // TODO: test fallback
+  static String? _gameTitleFromDataJson(dynamic dataJson, String standardUrl) {
+    final data = _asMap(dataJson);
+    return _firstString(data, ['title']) ??
+        Uri.parse(standardUrl).pathSegments.last;
+  }
+
+  // TODO: test fallback
+  static String? _gameAuthorFromDataJson(dynamic dataJson, String standardUrl) {
+    final data = _asMap(dataJson);
+    final authors = data?['authors'];
+    if (authors is List && authors.isNotEmpty) {
+      final firstAuthor = _asMap(authors.first);
+      final name = _firstString(firstAuthor, ['name']);
+      if (name != null) {
+        return name;
+      }
+    }
+    final links = _asMap(data?['links']);
+    final selfUrl = _firstString(links, ['self']);
+    if (selfUrl != null) {
+      return Uri.parse(selfUrl).host.split('.').first;
+    }
+    return Uri.parse(standardUrl).host.split('.').first;
+  }
+
+  static String _downloadEndpoint(String apiKey, String uploadId) =>
+      'https://itch.io/api/1/$apiKey/upload/$uploadId/download';
+
+  static String? _labelForUpload(Map<String, dynamic> upload) {
+    return _firstString(upload, ['display_name', 'filename']) ??
+        (upload['id'] != null ? 'upload-${upload['id']}' : null);
+  }
+
+
+  // TODO: build is not always present, and filename is not always a good version indicator
+  // fallbacks that might work: 'md5_hash', 'updated_at', 'id' (which is incremental and therefore unique but global and not per-game)
+  static String? _versionForUpload(Map<String, dynamic> upload) {
+    final build = _asMap(upload['build']);
+    return _firstString(build, ['user_version']) ??
+        _firstString(upload, ['filename']);
+  }
+
   static Future<APKDetails?> tryGetLatestAPKDetails({
+    required AppSource source,
     required String standardUrl,
     required String apiKey,
     required Map<String, dynamic> additionalSettings,
@@ -158,11 +293,81 @@ class _ItchIoApiClient {
     if (apiKey.isEmpty) {
       return null;
     }
-    // TODO: implement
-    return null;
+
+    final dataRes = await source.sourceRequest(
+      '$standardUrl/data.json',
+      additionalSettings,
+    );
+    if (dataRes.statusCode != 200) {
+      return null;
+    }
+
+    final dataJson = jsonDecode(dataRes.body);
+    final gameId = _extractGameIdFromDataJson(dataJson);
+    if (gameId == null) {
+      return null;
+    }
+
+    final uploadsRes = await source.sourceRequest(
+      'https://api.itch.io/games/$gameId/uploads',
+      additionalSettings,
+    );
+    if (uploadsRes.statusCode != 200) {
+      return null;
+    }
+
+    final uploadsJson = jsonDecode(uploadsRes.body);
+    final uploads = _asUploads(uploadsJson)
+        .where(_isAndroidUpload)
+        .toList();
+    if (uploads.isEmpty) {
+      return null;
+    }
+
+    uploads.sort((a, b) {
+      final ad = _parseDate(a['updated_at']) ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bd = _parseDate(b['updated_at']) ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bd.compareTo(ad);
+    });
+
+    final gameTitle = _gameTitleFromDataJson(dataJson, standardUrl) ??
+        Uri.parse(standardUrl).pathSegments.last;
+    final gameAuthor = _gameAuthorFromDataJson(dataJson, standardUrl) ??
+        Uri.parse(standardUrl).host.split('.').first;
+    final newestUpload = uploads.first;
+    final newestUploadBuild = _asMap(newestUpload['build']); // TODO: build is not always present
+    final version = _versionForUpload(newestUpload) ??
+        _firstString(newestUploadBuild, ['version']) ??
+        _parseDate(newestUpload['updated_at'])?.toIso8601String() ??
+        'latest';
+    final releaseDate = _parseDate(newestUpload['updated_at']) ??
+        _parseDate(newestUploadBuild?['updated_at']);
+
+    final apkLinks = <MapEntry<String, String>>[];
+    for (final upload in uploads) {
+      final uploadId = upload['id']?.toString();
+      if (uploadId == null || uploadId.isEmpty) {
+        continue;
+      }
+      final label = _labelForUpload(upload) ?? 'Android upload';
+      apkLinks.add(MapEntry(label, 'itchio-upload://$uploadId'));
+    }
+
+    if (apkLinks.isEmpty) {
+      return null;
+    }
+
+    return APKDetails(
+      version,
+      apkLinks,
+      AppNames(gameAuthor, gameTitle),
+      releaseDate: releaseDate,
+      allAssetUrls: List<MapEntry<String, String>>.from(apkLinks),
+    );
   }
 
   static Future<String?> tryResolveAssetUrl({
+    required AppSource source,
     required String assetUrl,
     required String standardUrl,
     required String apiKey,
@@ -171,7 +376,28 @@ class _ItchIoApiClient {
     if (apiKey.isEmpty) {
       return null;
     }
-    // TODO: implement
+
+    final uploadId = _Common._uploadIdFromAssetUrl(assetUrl);
+
+    var downloadRes = await source.sourceRequest(
+      _downloadEndpoint(apiKey, uploadId),
+      additionalSettings,
+    );
+    if (downloadRes.statusCode != 200) {
+      return null;
+    }
+
+    // TODO: check all of this against real API responses
+    // TODO: merge web scraper and API duplicated logic (e.g. version parsing)
+    try {
+      final body = jsonDecode(downloadRes.body);
+      if (body is Map<String, dynamic>) {
+        final url = body['url'] ?? body['download_url'] ?? body['direct_url'];
+        return url?.toString();
+      }
+    } catch (_) {
+      // Unexpected - ignore and fall back.
+    }
     return null;
   }
 }
@@ -560,7 +786,7 @@ class _ItchIoWebScraper {
   ) async {
     // We store the upload ID in the last chunk of the URL.
     // We can then use it to retrive the Cloudflare R2 real URL.
-    var uploadId = assetUrl.split('/').last;
+    var uploadId = _Common._uploadIdFromAssetUrl(assetUrl);
 
     String? cloudFlareUrl = await _retrieveCloudflareUrl(
       source,
