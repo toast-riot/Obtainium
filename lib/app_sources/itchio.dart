@@ -4,6 +4,7 @@ import 'package:html/dom.dart' as dom;
 import 'package:obtainium/components/generated_form.dart';
 import 'package:obtainium/custom_errors.dart';
 import 'package:obtainium/providers/source_provider.dart';
+import 'package:obtainium/providers/settings_provider.dart';
 import 'package:html/parser.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:flutter/material.dart';
@@ -75,8 +76,134 @@ class ItchIO extends AppSource {
     return headers.isNotEmpty ? headers : null;
   }
 
+  Future<String?> _getApiKeyIfAny(Map<String, dynamic> additionalSettings) async {
+    SettingsProvider settingsProvider = SettingsProvider();
+    await settingsProvider.initializeSettings();
+    var sourceConfig = await getSourceConfigValues(
+      additionalSettings,
+      settingsProvider,
+    );
+    String? apiKey = sourceConfig['itchio-creds'];
+    return apiKey != null && apiKey.isNotEmpty ? apiKey : null;
+  }
+
+  Future<APKDetails?> _getLatestAPKDetailsViaApi(
+    String standardUrl,
+    Map<String, dynamic> additionalSettings,
+  ) async {
+    final apiKey = await _getApiKeyIfAny(additionalSettings);
+    if (apiKey == null) {
+      return null;
+    }
+
+    return await _ItchIoApiClient.tryGetLatestAPKDetails(
+      standardUrl: standardUrl,
+      apiKey: apiKey,
+      additionalSettings: additionalSettings,
+    );
+  }
+
+  Future<String?> _resolveAssetUrlViaApi(
+    String assetUrl,
+    String standardUrl,
+    Map<String, dynamic> additionalSettings,
+  ) async {
+    final apiKey = await _getApiKeyIfAny(additionalSettings);
+    if (apiKey == null) {
+      return null;
+    }
+
+    return await _ItchIoApiClient.tryResolveAssetUrl(
+      assetUrl: assetUrl,
+      standardUrl: standardUrl,
+      apiKey: apiKey,
+      additionalSettings: additionalSettings,
+    );
+  }
+
+  @override
+  Future<APKDetails> getLatestAPKDetails(
+    String standardUrl,
+    Map<String, dynamic> additionalSettings,
+  ) async {
+    final apiDetails = await _getLatestAPKDetailsViaApi(
+      standardUrl,
+      additionalSettings,
+    );
+    if (apiDetails != null) {
+      return apiDetails;
+    }
+
+    return await _ItchIoWebScraper.tryGetLatestAPKDetails(
+      this,
+      standardUrl,
+      additionalSettings,
+    );
+  }
+
+  /// Custom itch.io URL fetcher.
+  ///
+  /// Since the filehost is on Cloudflare R2, we need to resolve the asset URL
+  /// after we identified the download.
+  @override
+  Future<String> assetUrlPrefetchModifier(
+    String assetUrl,
+    String standardUrl,
+    Map<String, dynamic> additionalSettings,
+  ) async {
+    final apiUrl = await _resolveAssetUrlViaApi(
+      assetUrl,
+      standardUrl,
+      additionalSettings,
+    );
+    if (apiUrl != null) {
+      return apiUrl;
+    }
+
+    final cloudFlareUrl = await _ItchIoWebScraper.tryResolveAssetUrl(
+      this,
+      assetUrl,
+      standardUrl,
+      additionalSettings,
+    );
+    if (cloudFlareUrl != null) {
+      return cloudFlareUrl;
+    }
+
+    return assetUrl;
+  }
+}
+
+class _ItchIoApiClient {
+  static Future<APKDetails?> tryGetLatestAPKDetails({
+    required String standardUrl,
+    required String apiKey,
+    required Map<String, dynamic> additionalSettings,
+  }) async {
+    if (apiKey.isEmpty) {
+      return null;
+    }
+    // TODO: implement
+    return null;
+  }
+
+  static Future<String?> tryResolveAssetUrl({
+    required String assetUrl,
+    required String standardUrl,
+    required String apiKey,
+    required Map<String, dynamic> additionalSettings,
+  }) async {
+    if (apiKey.isEmpty) {
+      return null;
+    }
+    // TODO: implement
+    return null;
+  }
+}
+
+class _ItchIoWebScraper {
   /// Extracts the CSRF token from the page body (either from an input or JSON).
-  String? _findCsrf(String body) {
+  static String? _findCsrf(String body) {
     RegExp csrfInputRegEx = RegExp(r'name="csrf_token" value="([^"]+)"');
     var match = csrfInputRegEx.firstMatch(body);
     if (match != null) return match.group(1);
@@ -92,7 +219,7 @@ class ItchIO extends AppSource {
   /// 1. Release name
   /// 2. Upload ID
   /// 3. Whether it is an Android download
-  List<(String, String, bool)> _extractDownload(String body) {
+  static List<(String, String, bool)> _extractDownload(String body) {
     var parser = parse(body);
 
     // Results containers
@@ -134,7 +261,7 @@ class ItchIO extends AppSource {
   ///
   /// This method has room for improvement; however, there is no defined
   /// standard on itch.io for declaring assets versions.
-  String? _parseVersion(dom.Document document) {
+  static String? _parseVersion(dom.Document document) {
     // Limit our search to specific areas.
     // In the main page, use the section for the game information.
     String searchArea = document.querySelector("div.page_widget")!.innerHtml;
@@ -167,16 +294,12 @@ class ItchIO extends AppSource {
       return 0;
     }
 
-    String bestMatch = matches.reduce(
-      (a, b) => compareVersions(a, b) > 0 ? a : b,
-    );
-
-    return bestMatch;
+    return matches.reduce((a, b) => compareVersions(a, b) > 0 ? a : b);
   }
 
   /// Extracts the "Updated" date and formats it as YYYYMMDD for versioning.
-  String? _getDateVersion(dom.Document document) {
-    // Check if we have any "abbr" dates. If now exit early.
+  static String? _getDateVersion(dom.Document document) {
+    // Check if we have any "abbr" dates. If not, exit early.
     List<dom.Element> abbrElements = document.querySelectorAll('abbr');
     if (abbrElements.isEmpty) return null;
 
@@ -194,23 +317,21 @@ class ItchIO extends AppSource {
     }
 
     DateTime latest = abbrDates.reduce(dateTimeFilter);
-
     return '${latest.year}${latest.month}${latest.day}';
   }
 
   /// Extracts the app title from the page title.
-  String _parseTitle(dom.Document document) {
+  static String _parseTitle(dom.Document document) {
     String? title;
     dom.Element titleElement = document.getElementsByTagName('title')[0];
     title = titleElement.text;
     // The title is in format: GAMENAME by GAMEAUTHOR
     // Then, get just the first part
-    title = title.split(' by ').first.trim();
-    return title;
+    return title.split(' by ').first.trim();
   }
 
   /// Resolves the app author from subdomain or author span.
-  String _parseAuthor(dom.Document document, String standardUrl) {
+  static String _parseAuthor(dom.Document document, String standardUrl) {
     dom.Element? followSpan = document.querySelector(
       'span.on_follow span.full_label',
     );
@@ -220,13 +341,14 @@ class ItchIO extends AppSource {
   }
 
   /// Internal method for retrieving CSRF token and cookies for multiple requests.
-  Future<(String?, String?)> _setupDownload(
+  static Future<(String?, String?)> _setupDownload(
+    AppSource source,
     String standardUrl,
     Map<String, dynamic> additionalSettings,
   ) async {
     final String baseUrl = standardUrl.replaceAll(RegExp(r'/$'), '');
 
-    var warmUpRes = await sourceRequest(baseUrl, {...additionalSettings});
+    var warmUpRes = await source.sourceRequest(baseUrl, {...additionalSettings});
     if (warmUpRes.statusCode != 200) return (null, null);
 
     var csrfToken = _findCsrf(warmUpRes.body)!;
@@ -235,14 +357,14 @@ class ItchIO extends AppSource {
   }
 
   /// Encapsulates the multi-step bypass flow to retrieve the download page body.
-  Future<String> _getDownloadPageBody(
+  static Future<String> _getDownloadPageBody(
+    AppSource source,
     String standardUrl,
     Map<String, dynamic> additionalSettings,
     String initialBody,
     String? initialCsrfToken,
     String? initialCookies,
   ) async {
-    // Start the setup
     final String baseUrl = standardUrl.replaceAll(RegExp(r'/$'), '');
     var currentBody = initialBody;
 
@@ -252,6 +374,7 @@ class ItchIO extends AppSource {
       (csrfToken, cookies) = (initialCsrfToken, initialCookies);
     } else {
       (csrfToken, cookies) = await _setupDownload(
+        source,
         standardUrl,
         additionalSettings,
       );
@@ -264,13 +387,13 @@ class ItchIO extends AppSource {
     // No buttons have been found, we need to "purchase"
     if (ids.isEmpty) {
       // Step 1: POST to /download_url bypass (e.g. for "Name your price")
-      var bypassRes = await sourceRequest(
+      var bypassRes = await source.sourceRequest(
         '$baseUrl/download_url',
         {
           ...additionalSettings,
           'extraHeaders': {
             'X-Requested-With': 'XMLHttpRequest',
-            'Cookie': ?cookies,
+            if (cookies != null) 'Cookie': cookies,
           },
         },
         postBody: {'csrf_token': csrfToken},
@@ -280,9 +403,9 @@ class ItchIO extends AppSource {
         var tokenizedUrl = jsonDecode(bypassRes.body)['url'] as String?;
         if (tokenizedUrl != null) {
           // We are now in GAME_URL/download/HASH
-          var downloadPageRes = await sourceRequest(tokenizedUrl, {
+          var downloadPageRes = await source.sourceRequest(tokenizedUrl, {
             ...additionalSettings,
-            'extraHeaders': {'Cookie': ?cookies},
+            'extraHeaders': {if (cookies != null) 'Cookie': cookies},
           });
           if (downloadPageRes.statusCode == 200) {
             // We are now at the download page, with shiny buttons
@@ -295,15 +418,15 @@ class ItchIO extends AppSource {
     return currentBody;
   }
 
-  @override
-  Future<APKDetails> getLatestAPKDetails(
+  static Future<APKDetails> tryGetLatestAPKDetails(
+    AppSource source,
     String standardUrl,
     Map<String, dynamic> additionalSettings,
   ) async {
     final String baseUrl = standardUrl.replaceAll(RegExp(r'/$'), '');
 
     // Retrieve the body for parsing
-    var res = await sourceRequest(standardUrl, additionalSettings);
+    var res = await source.sourceRequest(standardUrl, additionalSettings);
     if (res.statusCode != 200) {
       throw getObtainiumHttpError(res);
     }
@@ -311,6 +434,7 @@ class ItchIO extends AppSource {
 
     // Retrieve CSRF token and cookies
     var (csrfToken, cookies) = await _setupDownload(
+      source,
       standardUrl,
       additionalSettings,
     );
@@ -324,6 +448,7 @@ class ItchIO extends AppSource {
 
     // Resolve tokenized download page
     String downloadPageBody = await _getDownloadPageBody(
+      source,
       standardUrl,
       additionalSettings,
       body,
@@ -344,15 +469,14 @@ class ItchIO extends AppSource {
 
     // Create all relevant APK links
     List<MapEntry<String, String>> apkLinks = [];
-
     var downloadIds = _extractDownload(downloadPageBody);
 
     for (var downloadInfo in downloadIds) {
       var (name, id, isAndroid) = downloadInfo;
-
       if (isAndroid) {
         // Try retrieving the correct file
         var realName = await _resolveRealFileName(
+          source,
           id,
           standardUrl,
           additionalSettings,
@@ -361,19 +485,17 @@ class ItchIO extends AppSource {
         );
         // Use the real name if possible, otherwise fallback to the one on the page.
         var label = realName ?? name;
-
         apkLinks.add(MapEntry(label, '$baseUrl/download/$id'));
       }
     }
 
     if (apkLinks.isEmpty) throw NoAPKError();
-
     return APKDetails(version, apkLinks, AppNames(author, title));
   }
 
-  /// Internal method for finding the correct Cloudflare R2 URL for any given
-  /// asset.
-  Future<String?> _retrieveCloudflareUrl(
+  /// Internal method for finding the correct Cloudflare R2 URL for any given asset.
+  static Future<String?> _retrieveCloudflareUrl(
+    AppSource source,
     String uploadId,
     String standardUrl,
     Map<String, dynamic> additionalSettings,
@@ -384,20 +506,21 @@ class ItchIO extends AppSource {
 
     if (csrfToken == null || cookies == null) {
       (csrfToken, cookies) = await _setupDownload(
+        source,
         standardUrl,
         additionalSettings,
       );
     }
 
     var fileApiUrl = '$baseUrl/file/$uploadId?as_props=1&source=game_download';
-    var downloadRequestRes = await sourceRequest(
+    var downloadRequestRes = await source.sourceRequest(
       fileApiUrl,
       {
         ...additionalSettings,
         'extraHeaders': {
           'X-Requested-With': 'XMLHttpRequest',
           'Referer': '$baseUrl/download/$uploadId',
-          'Cookie': ?cookies,
+          if (cookies != null) 'Cookie': cookies,
         },
       },
       postBody: {'csrf_token': csrfToken},
@@ -406,15 +529,15 @@ class ItchIO extends AppSource {
     if (downloadRequestRes.statusCode != 200) return null;
 
     // This is a JSON with the url within
-    var directUrl = jsonDecode(downloadRequestRes.body)['url'] as String?;
-    return directUrl;
+    return jsonDecode(downloadRequestRes.body)['url'] as String?;
   }
 
   /// Resolves the real filename of an asset by following the download flow.
   ///
   /// This retrieves the direct download URL (often Cloudflare R2) and
   /// extracts the filename from the Content-Disposition header.
-  Future<String?> _resolveRealFileName(
+  static Future<String?> _resolveRealFileName(
+    AppSource source,
     String uploadId,
     String standardUrl,
     Map<String, dynamic> additionalSettings,
@@ -422,6 +545,7 @@ class ItchIO extends AppSource {
     String? cookies,
   ) async {
     var directUrl = await _retrieveCloudflareUrl(
+      source,
       uploadId,
       standardUrl,
       additionalSettings,
@@ -432,7 +556,7 @@ class ItchIO extends AppSource {
     if (directUrl == null) return null;
 
     final String baseUrl = standardUrl.replaceAll(RegExp(r'/$'), '');
-    var streamRes = await sourceRequestStreamResponse('GET', directUrl, {
+    var streamRes = await source.sourceRequestStreamResponse('GET', directUrl, {
       'Referer': '$baseUrl?download',
     }, additionalSettings);
 
@@ -451,8 +575,8 @@ class ItchIO extends AppSource {
   ///
   /// Since the filehost is on Cloudflare R2, we need to resolve the asset URL
   /// after we identified the download.
-  @override
-  Future<String> assetUrlPrefetchModifier(
+  static Future<String?> tryResolveAssetUrl(
+    AppSource source,
     String assetUrl,
     String standardUrl,
     Map<String, dynamic> additionalSettings,
@@ -462,6 +586,7 @@ class ItchIO extends AppSource {
     var uploadId = assetUrl.split('/').last;
 
     String? cloudFlareUrl = await _retrieveCloudflareUrl(
+      source,
       uploadId,
       standardUrl,
       additionalSettings,
@@ -470,8 +595,6 @@ class ItchIO extends AppSource {
       null,
     );
 
-    if (cloudFlareUrl != null) return cloudFlareUrl;
-
-    return assetUrl;
+    return cloudFlareUrl;
   }
 }
