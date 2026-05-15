@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart'; // TODO: rm
 import 'package:easy_localization/easy_localization.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:obtainium/components/generated_form.dart';
@@ -157,32 +158,16 @@ class ItchIO extends AppSource {
 
 
 class _Common {
-  // TODO: test
-  static String _uploadIdFromAssetUrl(String assetUrl) {
-    String uploadId = assetUrl.split('/').last; // TODO: see if this works, if it's not robust try the method below
-    if (uploadId.isEmpty) {
-      throw FormatException('Invalid asset URL format: $assetUrl');
-    }
-    return uploadId;
-
-    // try {
-    //   final uri = Uri.parse(assetUrl);
-    //   if (uri.scheme == 'itchio-upload') {
-    //     return uri.host.isNotEmpty ? uri.host : uri.pathSegments.isNotEmpty ? uri.pathSegments.last : null;
-    //   }
-    //   final match = RegExp(r'/upload/(\d+)(?:/download)?$').firstMatch(uri.path);
-    //   if (match != null) {
-    //     return match.group(1);
-    //   }
-    // } catch (_) {
-    //   // Ignore and fall back to the regex below.
-    // }
-    // final fallbackMatch = RegExp(r'(\d+)$').firstMatch(assetUrl);
-    // return fallbackMatch?.group(1);
-  }
 }
 
 class _ItchIoApiClient {
+  static void _log(String message) { // TODO: rm
+    if (kDebugMode) {
+      // ignore: avoid_print
+      print('itchio-api: $message');
+    }
+  }
+
   static Map<String, dynamic>? _asMap(dynamic value) {
     return value is Map ? Map<String, dynamic>.from(value) : null;
   }
@@ -291,20 +276,24 @@ class _ItchIoApiClient {
     required Map<String, dynamic> additionalSettings,
   }) async {
     if (apiKey.isEmpty) {
+      _log('skip latest-details: [ERROR] missing api key for $standardUrl');
       return null;
     }
 
+    _log('latest-details: start standardUrl=$standardUrl');
     final dataRes = await source.sourceRequest(
       '$standardUrl/data.json',
       additionalSettings,
     );
     if (dataRes.statusCode != 200) {
+      _log('latest-details: [ERROR] data.json request failed; falling back to scraper');
       return null;
     }
 
     final dataJson = jsonDecode(dataRes.body);
     final gameId = _extractGameIdFromDataJson(dataJson);
     if (gameId == null) {
+      _log('latest-details: [ERROR] data.json missing game id; falling back to scraper');
       return null;
     }
 
@@ -313,6 +302,7 @@ class _ItchIoApiClient {
       additionalSettings,
     );
     if (uploadsRes.statusCode != 200) {
+      _log('latest-details: [ERROR] uploads request failed; falling back to scraper');
       return null;
     }
 
@@ -321,6 +311,7 @@ class _ItchIoApiClient {
         .where(_isAndroidUpload)
         .toList();
     if (uploads.isEmpty) {
+      _log('latest-details: [ERROR] no android uploads found; falling back to scraper');
       return null;
     }
 
@@ -336,7 +327,7 @@ class _ItchIoApiClient {
         Uri.parse(standardUrl).host.split('.').first;
     final newestUpload = uploads.first;
     final newestUploadBuild = _asMap(newestUpload['build']); // TODO: build is not always present
-    final version = _versionForUpload(newestUpload) ??
+    final version = _versionForUpload(newestUpload) ?? // TODO: redo this
         _firstString(newestUploadBuild, ['version']) ??
         _parseDate(newestUpload['updated_at'])?.toIso8601String() ??
         'latest';
@@ -347,16 +338,22 @@ class _ItchIoApiClient {
     for (final upload in uploads) {
       final uploadId = upload['id']?.toString();
       if (uploadId == null || uploadId.isEmpty) {
+        _log('latest-details: skipping upload with missing id display_name=${upload['display_name']} filename=${upload['filename']}');
         continue;
       }
       final label = _labelForUpload(upload) ?? 'Android upload';
+      // TODO: look into asset urls. Avoid using this problematic pseudoUrl since the app checks
+      // assetUrl domains for user confirmation
+      _log('latest-details: apk-link label=$label pseudoUrl=itchio-upload://$uploadId');
       apkLinks.add(MapEntry(label, 'itchio-upload://$uploadId'));
     }
 
     if (apkLinks.isEmpty) {
+      _log('latest-details: no apk links built; falling back to scraper');
       return null;
     }
 
+    _log('latest-details: success apkLinks=${apkLinks.length} title=$gameTitle author=$gameAuthor');
     return APKDetails(
       version,
       apkLinks,
@@ -364,6 +361,28 @@ class _ItchIoApiClient {
       releaseDate: releaseDate,
       allAssetUrls: List<MapEntry<String, String>>.from(apkLinks),
     );
+  }
+
+  static String _uploadIdFromAssetUrl(String assetUrl) {
+    // TODO: simplify this logic
+    try {
+      final uri = Uri.parse(assetUrl);
+      if (uri.scheme == 'itchio-upload') {
+        return uri.host.isNotEmpty
+            ? uri.host
+            : uri.pathSegments.isNotEmpty
+                ? uri.pathSegments.last
+                : throw FormatException('Invalid itchio-upload URL: $assetUrl');
+      }
+      String? match = RegExp(r'/upload/(\d+)(?:/download)?$').firstMatch(uri.path)?.group(1);
+      if (match != null) {
+        return match;
+      }
+    } catch (_) {
+      // Ignore and fall back to the regex below.
+    }
+    final fallbackMatch = RegExp(r'(\d+)$').firstMatch(assetUrl);
+    return fallbackMatch?.group(1) ?? (throw FormatException('Invalid asset URL: $assetUrl'));
   }
 
   static Future<String?> tryResolveAssetUrl({
@@ -374,16 +393,27 @@ class _ItchIoApiClient {
     required Map<String, dynamic> additionalSettings,
   }) async {
     if (apiKey.isEmpty) {
+      _log('asset-url: [ERROR] skip missing api key assetUrl=$assetUrl');
       return null;
     }
 
-    final uploadId = _Common._uploadIdFromAssetUrl(assetUrl);
+    String uploadId;
+    try {
+      uploadId = _ItchIoApiClient._uploadIdFromAssetUrl(assetUrl);
+    } catch (err) {
+      _log('asset-url: invalid assetUrl=$assetUrl error=$err');
+      return null;
+    }
+    _log('asset-url: resolved uploadId=$uploadId from assetUrl=$assetUrl');
 
+    final downloadEndpoint = _downloadEndpoint(apiKey, uploadId);
+    _log('asset-url: request downloadEndpoint=$downloadEndpoint');
     var downloadRes = await source.sourceRequest(
-      _downloadEndpoint(apiKey, uploadId),
+      downloadEndpoint,
       additionalSettings,
     );
     if (downloadRes.statusCode != 200) {
+      _log('asset-url: [ERROR] downloadEndpoint failed; falling back');
       return null;
     }
 
@@ -393,11 +423,14 @@ class _ItchIoApiClient {
       final body = jsonDecode(downloadRes.body);
       if (body is Map<String, dynamic>) {
         final url = body['url'] ?? body['download_url'] ?? body['direct_url'];
+        _log('asset-url: decoded download field url=$url');
         return url?.toString();
       }
     } catch (_) {
       // Unexpected - ignore and fall back.
+      _log('asset-url: [ERROR] json decode failed for download endpoint; falling back');
     }
+    _log('asset-url: [ERROR] no usable url in response; falling back');
     return null;
   }
 }
@@ -786,7 +819,8 @@ class _ItchIoWebScraper {
   ) async {
     // We store the upload ID in the last chunk of the URL.
     // We can then use it to retrive the Cloudflare R2 real URL.
-    var uploadId = _Common._uploadIdFromAssetUrl(assetUrl);
+    var uploadId = assetUrl.split('/').last;
+    // TODO: maybe merge logic with API client
 
     String? cloudFlareUrl = await _retrieveCloudflareUrl(
       source,
