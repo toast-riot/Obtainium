@@ -100,14 +100,18 @@ class ItchIO extends AppSource {
   ) async {
     final apiKey = await _getApiKeyIfAny(additionalSettings);
     if (apiKey != null) {
-      final apiDetails = await _ItchIoApiClient.tryGetLatestAPKDetails(
-        source: this,
-        standardUrl: standardUrl,
-        apiKey: apiKey,
-        additionalSettings: additionalSettings,
-      );
-      if (apiDetails != null) {
+      try {
+        final apiDetails = await _ItchIoApiClient.tryGetLatestAPKDetails(
+          source: this,
+          standardUrl: standardUrl,
+          apiKey: apiKey,
+          additionalSettings: additionalSettings,
+        );
         return apiDetails;
+      } on APIError catch (e) {
+        if (!e.shouldFallBack) {
+          rethrow;
+        }
       }
     }
 
@@ -130,15 +134,19 @@ class ItchIO extends AppSource {
   ) async {
     final apiKey = await _getApiKeyIfAny(additionalSettings);
     if (apiKey != null) {
-      final apiUrl = await _ItchIoApiClient.tryResolveAssetUrl(
-        source: this,
-        assetUrl: assetUrl,
-        standardUrl: standardUrl,
-        apiKey: apiKey,
-        additionalSettings: additionalSettings,
-      );
-      if (apiUrl != null) {
+      try {
+        final apiUrl = await _ItchIoApiClient.tryResolveAssetUrl(
+          source: this,
+          assetUrl: assetUrl,
+          standardUrl: standardUrl,
+          apiKey: apiKey,
+          additionalSettings: additionalSettings,
+        );
         return apiUrl;
+      } on APIError catch (e) {
+        if (!e.shouldFallBack) {
+          rethrow;
+        }
       }
     }
 
@@ -160,12 +168,23 @@ class ItchIO extends AppSource {
 class _Common {
 }
 
+class APIError implements Exception {
+  final String message;
+  final bool shouldFallBack;
+
+  APIError(
+    this.message, {
+    this.shouldFallBack = true,
+    // shouldFallBack is set to false only when the error is something user-related,
+    // in which case the scraper would run into the same issue (e.g. no compatible uploads)
+  });
+  @override
+  String toString() => 'itch.io API Error: $message';
+}
+
 class _ItchIoApiClient {
   static void _log(String message) { // TODO: rm
-    if (kDebugMode) {
-      // ignore: avoid_print
-      print('itchio-api: $message');
-    }
+    if (kDebugMode) { print('itchio-api: $message'); }
   }
 
   static Map<String, dynamic>? _asMap(dynamic value) {
@@ -208,7 +227,6 @@ class _ItchIoApiClient {
     return null;
   }
 
-  // TODO: can obtainium handle .zip and .xapk?
   static bool _isAndroidUpload(Map<String, dynamic> upload) {
     final filename = _firstString(upload, ['filename'])?.toLowerCase() ?? '';
     if (!(filename.endsWith('.apk') || filename.endsWith('.xapk') || filename.endsWith('.zip'))) {
@@ -221,45 +239,24 @@ class _ItchIoApiClient {
     return false;
   }
 
-  static String? _extractGameIdFromDataJson(dynamic dataJson) {
-    final data = _asMap(dataJson);
-    return data?['id']?.toString();
-  }
-
-  // TODO: test fallback
-  static String? _gameTitleFromDataJson(dynamic dataJson, String standardUrl) {
-    final data = _asMap(dataJson);
-    return _firstString(data, ['title']) ??
-        Uri.parse(standardUrl).pathSegments.last;
-  }
-
-  // TODO: test fallback
-  static String? _gameAuthorFromDataJson(dynamic dataJson, String standardUrl) {
-    final data = _asMap(dataJson);
-    final authors = data?['authors'];
-    if (authors is List && authors.isNotEmpty) {
-      final firstAuthor = _asMap(authors.first);
-      final name = _firstString(firstAuthor, ['name']);
-      if (name != null) {
-        return name;
-      }
+  static (String, String, String) _extractMeta(Map<String, dynamic> data) { //STATUS: done
+    try {
+      // for title and author, https://api.itch.io/games/<GAME-ID> would probably be better, but this avoids extra requests
+      // I've intentionally removed fallbacks, preferring fail-fast since in theory these fields are always present
+      final gameId = data['id'].toString();
+      final gameTitle = data['title'];
+      // final gameAuthor = _asMap(data['authors'].first)['name']; // TODO: rm if the below doesn't work well
+      final gameAuthor = (data['authors'] as List).map((a) => a['name']).join(', ');
+      return (gameId, gameTitle, gameAuthor);
+    } catch (e) {
+      throw APIError('Failed to extract game metadata from data.json: $e', shouldFallBack: false);
     }
-    final links = _asMap(data?['links']);
-    final selfUrl = _firstString(links, ['self']);
-    if (selfUrl != null) {
-      return Uri.parse(selfUrl).host.split('.').first;
-    }
-    return Uri.parse(standardUrl).host.split('.').first;
   }
-
-  static String _downloadEndpoint(String apiKey, String uploadId) =>
-      'https://itch.io/api/1/$apiKey/upload/$uploadId/download';
 
   static String? _labelForUpload(Map<String, dynamic> upload) {
     return _firstString(upload, ['display_name', 'filename']) ??
         (upload['id'] != null ? 'upload-${upload['id']}' : null);
   }
-
 
   // TODO: build is not always present, and filename is not always a good version indicator
   // fallbacks that might work: 'md5_hash', 'updated_at', 'id' (which is incremental and therefore unique but global and not per-game)
@@ -275,45 +272,32 @@ class _ItchIoApiClient {
     required String apiKey,
     required Map<String, dynamic> additionalSettings,
   }) async {
-    if (apiKey.isEmpty) {
-      _log('skip latest-details: [ERROR] missing api key for $standardUrl');
-      return null;
-    }
+    if (apiKey.isEmpty) { throw APIError('API key is empty'); }
 
-    _log('latest-details: start standardUrl=$standardUrl');
+    // get game metadata
     final dataRes = await source.sourceRequest(
       '$standardUrl/data.json',
       additionalSettings,
     );
-    if (dataRes.statusCode != 200) {
-      _log('latest-details: [ERROR] data.json request failed; falling back to scraper');
-      return null;
-    }
+    if (dataRes.statusCode != 200) { throw APIError('Failed to fetch data.json; status code ${dataRes.statusCode}'); }
 
     final dataJson = jsonDecode(dataRes.body);
-    final gameId = _extractGameIdFromDataJson(dataJson);
-    if (gameId == null) {
-      _log('latest-details: [ERROR] data.json missing game id; falling back to scraper');
-      return null;
-    }
+    final dataMap = _asMap(dataJson);
+    if (dataMap == null) { throw APIError('data.json could not be parsed', shouldFallBack: false); }
+    final (gameId, gameTitle, gameAuthor) = _extractMeta(dataMap);
 
+    // get uploads
     final uploadsRes = await source.sourceRequest(
       'https://api.itch.io/games/$gameId/uploads',
       additionalSettings,
     );
-    if (uploadsRes.statusCode != 200) {
-      _log('latest-details: [ERROR] uploads request failed; falling back to scraper');
-      return null;
-    }
+    if (uploadsRes.statusCode != 200) { throw APIError('Failed to fetch uploads; status code ${uploadsRes.statusCode}'); }
 
     final uploadsJson = jsonDecode(uploadsRes.body);
-    final uploads = _asUploads(uploadsJson)
-        .where(_isAndroidUpload)
-        .toList();
-    if (uploads.isEmpty) {
-      _log('latest-details: [ERROR] no android uploads found; falling back to scraper');
-      return null;
-    }
+    final allUploads = _asUploads(uploadsJson);
+    if (allUploads.isEmpty) { throw APIError('No uploads found for game ID $gameId', shouldFallBack: false); }
+    final uploads = allUploads.where(_isAndroidUpload).toList();
+    if (uploads.isEmpty) { throw APIError('No uploads were Android-compatible for game ID $gameId', shouldFallBack: false); }
 
     uploads.sort((a, b) {
       final ad = _parseDate(a['updated_at']) ?? DateTime.fromMillisecondsSinceEpoch(0);
@@ -321,10 +305,6 @@ class _ItchIoApiClient {
       return bd.compareTo(ad);
     });
 
-    final gameTitle = _gameTitleFromDataJson(dataJson, standardUrl) ??
-        Uri.parse(standardUrl).pathSegments.last;
-    final gameAuthor = _gameAuthorFromDataJson(dataJson, standardUrl) ??
-        Uri.parse(standardUrl).host.split('.').first;
     final newestUpload = uploads.first;
     final newestUploadBuild = _asMap(newestUpload['build']); // TODO: build is not always present
     final version = _versionForUpload(newestUpload) ?? // TODO: redo this
@@ -336,16 +316,10 @@ class _ItchIoApiClient {
 
     final apkLinks = <MapEntry<String, String>>[];
     for (final upload in uploads) {
-      final uploadId = upload['id']?.toString();
-      if (uploadId == null || uploadId.isEmpty) {
-        _log('latest-details: skipping upload with missing id display_name=${upload['display_name']} filename=${upload['filename']}');
-        continue;
-      }
+      final int uploadId = upload['id'];
       final label = _labelForUpload(upload) ?? 'Android upload';
-      // TODO: look into asset urls. Avoid using this problematic pseudoUrl since the app checks
-      // assetUrl domains for user confirmation
-      _log('latest-details: apk-link label=$label pseudoUrl=itchio-upload://$uploadId');
-      apkLinks.add(MapEntry(label, 'itchio-upload://$uploadId'));
+      // TODO: look into asset urls. Avoid using this problematic pseudoUrl since the app checks assetUrl domains for user confirmation
+      apkLinks.add(MapEntry(label, 'itchio-upload://itch.io/$uploadId'));
     }
 
     if (apkLinks.isEmpty) {
@@ -363,24 +337,8 @@ class _ItchIoApiClient {
     );
   }
 
+  // TODO: redo this entirely, pseudo URLs shouldn't be necessary
   static String _uploadIdFromAssetUrl(String assetUrl) {
-    // TODO: simplify this logic
-    try {
-      final uri = Uri.parse(assetUrl);
-      if (uri.scheme == 'itchio-upload') {
-        return uri.host.isNotEmpty
-            ? uri.host
-            : uri.pathSegments.isNotEmpty
-                ? uri.pathSegments.last
-                : throw FormatException('Invalid itchio-upload URL: $assetUrl');
-      }
-      String? match = RegExp(r'/upload/(\d+)(?:/download)?$').firstMatch(uri.path)?.group(1);
-      if (match != null) {
-        return match;
-      }
-    } catch (_) {
-      // Ignore and fall back to the regex below.
-    }
     final fallbackMatch = RegExp(r'(\d+)$').firstMatch(assetUrl);
     return fallbackMatch?.group(1) ?? (throw FormatException('Invalid asset URL: $assetUrl'));
   }
@@ -392,10 +350,12 @@ class _ItchIoApiClient {
     required String apiKey,
     required Map<String, dynamic> additionalSettings,
   }) async {
-    if (apiKey.isEmpty) {
-      _log('asset-url: [ERROR] skip missing api key assetUrl=$assetUrl');
-      return null;
-    }
+    if (apiKey.isEmpty) { throw APIError('Missing API key'); }
+
+
+    _log('asset-url: using assetUrl=$assetUrl');
+
+    throw APIError('Not yet implemented', shouldFallBack: true);
 
     String uploadId;
     try {
@@ -406,19 +366,14 @@ class _ItchIoApiClient {
     }
     _log('asset-url: resolved uploadId=$uploadId from assetUrl=$assetUrl');
 
-    final downloadEndpoint = _downloadEndpoint(apiKey, uploadId);
-    _log('asset-url: request downloadEndpoint=$downloadEndpoint');
     var downloadRes = await source.sourceRequest(
-      downloadEndpoint,
+      'https://api.itch.io/uploads/$uploadId/download',
       additionalSettings,
     );
-    if (downloadRes.statusCode != 200) {
-      _log('asset-url: [ERROR] downloadEndpoint failed; falling back');
-      return null;
-    }
-
+    if (downloadRes.statusCode != 200) { throw APIError('Failed to download asset; status code ${downloadRes.statusCode}'); }
+    
     // TODO: check all of this against real API responses
-    // TODO: merge web scraper and API duplicated logic (e.g. version parsing)
+    // TODO: merge web scraper and API duplicated logic (version parsing, download url handling)
     try {
       final body = jsonDecode(downloadRes.body);
       if (body is Map<String, dynamic>) {
