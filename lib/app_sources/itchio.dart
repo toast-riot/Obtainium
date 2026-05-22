@@ -76,7 +76,7 @@ class ItchIO extends AppSource {
       );
     }
     final apiKey = await _getApiKeyIfAny(additionalSettings);
-    if (apiKey != null && url.startsWith('https://api.itch.io/')) {
+    if (apiKey != null && Uri.tryParse(url)?.host == 'api.itch.io') {
       headers[HttpHeaders.authorizationHeader] = apiKey;
     }
     return headers.isNotEmpty ? headers : null;
@@ -164,6 +164,45 @@ class ItchIO extends AppSource {
   }
 }
 
+class _API_Upload {
+  final int id;
+  final String filename;
+  final String? displayName;
+  final List<String> traits;
+  // final String storage;
+  // final int size;
+  // final _build?;
+  // final String? type;
+  // final DateTime createdAt;
+  final DateTime updatedAt;
+
+  bool get isAndroid {
+    final fn = filename.toLowerCase();
+    return (
+        fn.endsWith('.apk') || fn.endsWith('.xapk') ||
+        (fn.endsWith('.zip') && traits.contains('p_android'))
+    );
+  }
+
+  _API_Upload({
+    required this.id,
+    required this.filename,
+    required this.displayName,
+    required this.traits,
+    required this.updatedAt
+  });
+
+  factory _API_Upload.fromJson(Map<String, dynamic> json) {
+    return _API_Upload(
+      id: json['id'] as int,
+      filename: json['filename'] as String,
+      displayName: json['display_name'] as String?,
+      traits: List<String>.from(json['traits']),
+      updatedAt: DateTime.parse(json['updated_at']),
+    );
+  }
+}
+
 
 class _Common {
 }
@@ -191,20 +230,7 @@ class _ItchIoApiClient {
     return value is Map ? Map<String, dynamic>.from(value) : null;
   }
 
-  static List<Map<String, dynamic>> _asUploads(dynamic value) {
-    if (value is Map<String, dynamic> && value['uploads'] is List) {
-      return (value['uploads'] as List)
-          .whereType<Map>()
-          .map((e) => Map<String, dynamic>.from(e))
-          .toList();
-    }
-    if (value is List) {
-      return value.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
-    }
-    return [];
-  }
-
-  static DateTime? _parseDate(dynamic value) {
+  static DateTime? _tryParseDate(dynamic value) {
     if (value == null) return null;
     try {
       return DateTime.parse(value.toString());
@@ -227,18 +253,6 @@ class _ItchIoApiClient {
     return null;
   }
 
-  static bool _isAndroidUpload(Map<String, dynamic> upload) {
-    final filename = _firstString(upload, ['filename'])?.toLowerCase() ?? '';
-    if (!(filename.endsWith('.apk') || filename.endsWith('.xapk') || filename.endsWith('.zip'))) {
-      return false;
-    }
-    final traits = upload['traits'];
-    if (traits is List && traits.any((e) => e?.toString() == 'p_android')) {
-      return true;
-    }
-    return false;
-  }
-
   static (String, String, String) _extractMeta(Map<String, dynamic> data) { //STATUS: done
     try {
       // for title and author, https://api.itch.io/games/<GAME-ID> would probably be better, but this avoids extra requests
@@ -253,27 +267,20 @@ class _ItchIoApiClient {
     }
   }
 
-  static String? _labelForUpload(Map<String, dynamic> upload) {
-    return _firstString(upload, ['display_name', 'filename']) ??
-        (upload['id'] != null ? 'upload-${upload['id']}' : null);
-  }
-
   // TODO: build is not always present, and filename is not always a good version indicator
   // fallbacks that might work: 'md5_hash', 'updated_at', 'id' (which is incremental and therefore unique but global and not per-game)
-  static String? _versionForUpload(Map<String, dynamic> upload) {
-    final build = _asMap(upload['build']);
-    return _firstString(build, ['user_version']) ??
-        _firstString(upload, ['filename']);
-  }
+  // static String? _versionForUpload(Map<String, dynamic> upload) {
+  //   final build = _asMap(upload['build']); // TODO: not always present
+  //   return _firstString(build, ['user_version']) ??
+  //       _firstString(upload, ['filename']);
+  // }
 
-  static Future<APKDetails?> tryGetLatestAPKDetails({
+  static Future<APKDetails> tryGetLatestAPKDetails({
     required AppSource source,
     required String standardUrl,
     required String apiKey,
     required Map<String, dynamic> additionalSettings,
   }) async {
-    if (apiKey.isEmpty) { throw APIError('API key is empty'); }
-
     // get game metadata
     final dataRes = await source.sourceRequest(
       '$standardUrl/data.json',
@@ -292,39 +299,33 @@ class _ItchIoApiClient {
       additionalSettings,
     );
     if (uploadsRes.statusCode != 200) { throw APIError('Failed to fetch uploads; status code ${uploadsRes.statusCode}'); }
-
     final uploadsJson = jsonDecode(uploadsRes.body);
-    final allUploads = _asUploads(uploadsJson);
+    final List<_API_Upload> allUploads = (uploadsJson['uploads'] as List)
+      .map((e) => _API_Upload.fromJson(Map<String, dynamic>.from(e)))
+      .toList();
+
     if (allUploads.isEmpty) { throw APIError('No uploads found for game ID $gameId', shouldFallBack: false); }
-    final uploads = allUploads.where(_isAndroidUpload).toList();
+    final uploads = allUploads.where((u) => u.isAndroid).toList();
     if (uploads.isEmpty) { throw APIError('No uploads were Android-compatible for game ID $gameId', shouldFallBack: false); }
 
-    uploads.sort((a, b) {
-      final ad = _parseDate(a['updated_at']) ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bd = _parseDate(b['updated_at']) ?? DateTime.fromMillisecondsSinceEpoch(0);
-      return bd.compareTo(ad);
-    });
-
+    uploads.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     final newestUpload = uploads.first;
-    final newestUploadBuild = _asMap(newestUpload['build']); // TODO: build is not always present
-    final version = _versionForUpload(newestUpload) ?? // TODO: redo this
-        _firstString(newestUploadBuild, ['version']) ??
-        _parseDate(newestUpload['updated_at'])?.toIso8601String() ??
-        'latest';
-    final releaseDate = _parseDate(newestUpload['updated_at']) ??
-        _parseDate(newestUploadBuild?['updated_at']);
+    // final newestUploadBuild = _asMap(newestUpload['build']); // TODO: build is not always present
+    // final version = _versionForUpload(newestUpload) ?? // TODO: redo this
+    //     _firstString(newestUploadBuild, ['version']) ??
+    //     _tryParseDate(newestUpload['updated_at'])?.toIso8601String() ??
+    //     'latest';
+    final releaseDate = newestUpload.updatedAt;
 
     final apkLinks = <MapEntry<String, String>>[];
     for (final upload in uploads) {
-      final int uploadId = upload['id'];
-      final label = _labelForUpload(upload) ?? 'Android upload';
+      final label = upload.displayName ?? upload.filename;
       // TODO: look into asset urls. Avoid using this problematic pseudoUrl since the app checks assetUrl domains for user confirmation
-      apkLinks.add(MapEntry(label, 'itchio-upload://itch.io/$uploadId'));
+      apkLinks.add(MapEntry(label, 'itchio-upload://itch.io/${upload.id}') );
     }
 
     if (apkLinks.isEmpty) {
-      _log('latest-details: no apk links built; falling back to scraper');
-      return null;
+        throw APIError('No valid APK links could be built from uploads for game ID $gameId', shouldFallBack: false);
     }
 
     _log('latest-details: success apkLinks=${apkLinks.length} title=$gameTitle author=$gameAuthor');
@@ -343,16 +344,13 @@ class _ItchIoApiClient {
     return fallbackMatch?.group(1) ?? (throw FormatException('Invalid asset URL: $assetUrl'));
   }
 
-  static Future<String?> tryResolveAssetUrl({
+  static Future<String> tryResolveAssetUrl({
     required AppSource source,
     required String assetUrl,
     required String standardUrl,
     required String apiKey,
     required Map<String, dynamic> additionalSettings,
   }) async {
-    if (apiKey.isEmpty) { throw APIError('Missing API key'); }
-
-
     _log('asset-url: using assetUrl=$assetUrl');
 
     throw APIError('Not yet implemented', shouldFallBack: true);
