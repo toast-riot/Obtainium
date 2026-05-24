@@ -112,7 +112,6 @@ class ItchIO extends AppSource {
         return await _ItchIoApiClient.tryGetLatestAPKDetails(
           source: this,
           standardUrl: standardUrl,
-          apiKey: apiKey,
           additionalSettings: additionalSettings,
         );
       } on APIError catch (e) {
@@ -144,7 +143,6 @@ class ItchIO extends AppSource {
           source: this,
           assetUrl: assetUrl,
           standardUrl: standardUrl,
-          apiKey: apiKey,
           additionalSettings: additionalSettings,
         );
       } on APIError catch (e) {
@@ -258,7 +256,6 @@ class _ItchIoApiClient {
   static Future<APKDetails> tryGetLatestAPKDetails({
     required AppSource source,
     required String standardUrl,
-    required String apiKey,
     required Map<String, dynamic> additionalSettings,
   }) async {
     final baseUrl = Uri.parse(standardUrl);
@@ -322,7 +319,6 @@ class _ItchIoApiClient {
     required AppSource source,
     required String assetUrl,
     required String standardUrl,
-    required String apiKey,
     required Map<String, dynamic> additionalSettings,
   }) async {
     throw APIError('Not yet implemented', shouldFallBack: true);
