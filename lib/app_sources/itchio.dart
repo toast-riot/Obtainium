@@ -145,7 +145,7 @@ class ItchIO extends AppSource {
           standardUrl: standardUrl,
           additionalSettings: additionalSettings,
         );
-      } on APIError catch (e) {
+      } on APIError catch (e) { // TODO: revise when fallbacks should be used
         if (!e.shouldFallBack) rethrow;
       }
     }
@@ -245,6 +245,10 @@ class APIError implements Exception {
   @override
   String toString() => 'itch.io API Error: $message';
 }
+
+// TODO: test paid games
+// TODO: translate strings of errors
+// TODO: merge any web scraper and API duplicated logic (version parsing)
 
 class _ItchIoApiClient {
   static const _host = 'api.itch.io';
@@ -621,7 +625,7 @@ class _ItchIoWebScraper {
 
     // Create all relevant APK links
     List<MapEntry<String, String>> apkLinks = [];
-    var downloadIds = _extractDownload(downloadPageBody);
+    var downloadIds = _extractDownload(downloadPageBody); // TODO: broken?
 
     for (var downloadInfo in downloadIds) {
       var (name, id, isAndroid) = downloadInfo;
@@ -651,7 +655,7 @@ class _ItchIoWebScraper {
   }
 
   /// Internal method for finding the correct Cloudflare R2 URL for any given asset.
-  static Future<String> _retrieveCloudflareUrl(
+  static Future<String> _retrieveCloudflareUrl( // TODO: broken?
     AppSource source,
     String uploadId,
     String standardUrl,
