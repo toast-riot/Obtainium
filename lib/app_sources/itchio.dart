@@ -627,14 +627,19 @@ class _ItchIoWebScraper {
       var (name, id, isAndroid) = downloadInfo;
       if (isAndroid) {
         // Try retrieving the correct file
-        var realName = await _resolveRealFileName(
-          source,
-          id,
-          standardUrl,
-          additionalSettings,
-          csrfToken,
-          cookies,
-        );
+        String? realName;
+        try {
+          realName = await _resolveRealFileName(
+            source,
+            id,
+            standardUrl,
+            additionalSettings,
+            csrfToken,
+            cookies,
+          );
+        } on ObtainiumError { // would be better to catch http errors specifically
+          // catch
+        }
         // Use the real name if possible, otherwise fallback to the one on the page.
         var label = realName ?? name;
         apkLinks.add(MapEntry(label, baseUrl.resolve('download/$id').toString()));
@@ -646,7 +651,7 @@ class _ItchIoWebScraper {
   }
 
   /// Internal method for finding the correct Cloudflare R2 URL for any given asset.
-  static Future<String?> _retrieveCloudflareUrl(
+  static Future<String> _retrieveCloudflareUrl(
     AppSource source,
     String uploadId,
     String standardUrl,
@@ -678,10 +683,10 @@ class _ItchIoWebScraper {
       postBody: {'csrf_token': csrfToken},
     );
 
-    if (downloadRequestRes.statusCode != 200) return null;
+    if (downloadRequestRes.statusCode != 200) throw getObtainiumHttpError(downloadRequestRes);
 
     // This is a JSON with the url within
-    return jsonDecode(downloadRequestRes.body)['url'] as String?;
+    return jsonDecode(downloadRequestRes.body)['url'] as String;
   }
 
   /// Resolves the real filename of an asset by following the download flow.
@@ -696,7 +701,7 @@ class _ItchIoWebScraper {
     String? csrfToken,
     String? cookies,
   ) async {
-    var directUrl = await _retrieveCloudflareUrl(
+    final directUrl = await _retrieveCloudflareUrl(
       source,
       uploadId,
       standardUrl,
@@ -705,9 +710,8 @@ class _ItchIoWebScraper {
       cookies,
     );
 
-    if (directUrl == null) return null;
-
     final baseUrl = Uri.parse(standardUrl);
+
     var streamRes = await sourceRequestStreamResponse('GET', directUrl, {
       'Referer': baseUrl.resolve('download').toString(),
     }, additionalSettings);
@@ -737,7 +741,7 @@ class _ItchIoWebScraper {
     // We can then use it to retrive the Cloudflare R2 real URL.
     String uploadId = Uri.parse(assetUrl).pathSegments.last;
 
-    String? cloudFlareUrl = await _retrieveCloudflareUrl(
+    return await _retrieveCloudflareUrl(
       source,
       uploadId,
       standardUrl,
@@ -746,9 +750,5 @@ class _ItchIoWebScraper {
       null,
       null,
     );
-
-    if (cloudFlareUrl != null) return cloudFlareUrl;
-
-    return assetUrl; // TODO: this should probably throw
   }
 }
