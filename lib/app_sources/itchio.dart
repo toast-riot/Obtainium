@@ -212,11 +212,16 @@ class _APIUpload {
   });
 
   factory _APIUpload.fromJson(Map<String, dynamic> json) {
+    // if no traits are present, they get interpreted as a map for some reason
+    final rawTraits = json['traits'];
+    final List<String> traits = (rawTraits is Map && rawTraits.isEmpty) ?
+      <String>[] : List<String>.from(rawTraits);
+
     return _APIUpload(
       id: json['id'] as int,
       filename: json['filename'] as String,
       displayName: json['display_name'] as String?,
-      traits: List<String>.from(json['traits']),
+      traits: traits,
       updatedAt: DateTime.parse(json['updated_at']),
     );
   }
