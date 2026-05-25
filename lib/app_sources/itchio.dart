@@ -10,6 +10,9 @@ import 'package:html/parser.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:flutter/material.dart';
 
+const bool allowAPI = true; // TODO: rm
+const bool allowWebScraping = false;
+
 /// AppSource implementation for itch.io.
 ///
 /// Itch.io uses a multi-step dynamic download flow that often requires
@@ -107,7 +110,7 @@ class ItchIO extends AppSource {
     Map<String, dynamic> additionalSettings,
   ) async {
     final apiKey = await _getApiKeyIfAny(additionalSettings);
-    if (apiKey != null) {
+    if (apiKey != null && allowAPI) {
       try {
         return await _ItchIoApiClient.tryGetLatestAPKDetails(
           source: this,
@@ -118,6 +121,8 @@ class ItchIO extends AppSource {
         if (!e.shouldFallBack) rethrow;
       }
     }
+
+    if (!allowWebScraping) throw ObtainiumError('Web scraping is disabled');
 
     return await _ItchIoWebScraper.tryGetLatestAPKDetails(
       this,
@@ -137,18 +142,21 @@ class ItchIO extends AppSource {
     Map<String, dynamic> additionalSettings,
   ) async {
     final apiKey = await _getApiKeyIfAny(additionalSettings);
-    if (apiKey != null) {
+    if (apiKey != null && allowAPI) {
       try {
         return await _ItchIoApiClient.tryResolveAssetUrl(
           source: this,
           assetUrl: assetUrl,
           standardUrl: standardUrl,
+          apiKey: apiKey,
           additionalSettings: additionalSettings,
         );
       } on APIError catch (e) { // TODO: revise when fallbacks should be used
         if (!e.shouldFallBack) rethrow;
       }
     }
+
+    if (!allowWebScraping) throw ObtainiumError('Web scraping disabled');
 
     return await _ItchIoWebScraper.tryResolveAssetUrl(
       this,
@@ -225,10 +233,6 @@ class _APIUpload {
       updatedAt: DateTime.parse(json['updated_at']),
     );
   }
-}
-
-
-class _Common {
 }
 
 class APIError implements Exception {
@@ -328,33 +332,29 @@ class _ItchIoApiClient {
     required AppSource source,
     required String assetUrl,
     required String standardUrl,
+    required String apiKey,
     required Map<String, dynamic> additionalSettings,
   }) async {
-    throw APIError('Not yet implemented', shouldFallBack: true);
+    final uploadId = Uri.parse(assetUrl).pathSegments.last;
+    // return _endpoint.resolve('uploads/$uploadId/download').toString();
 
-    String uploadId = Uri.parse(assetUrl).pathSegments.last;
-
-    var downloadRes = await source.sourceRequest(
-      _endpoint.resolve('uploads/$uploadId/download').toString(),
+    // var downloadRes = await source.sourceRequest(
+    //   _endpoint.resolve('uploads/$uploadId/download').toString(),
+    //   additionalSettings,
+    // );
+    final downloadRes = await source.sourceRequest(
+      'https://itch.io/api/1/$apiKey/upload/$uploadId/download',
       additionalSettings,
     );
-    if (downloadRes.statusCode != 200) { throw getObtainiumHttpError(downloadRes); }
-    
-    // TODO: check all of this against real API responses
-    // TODO: merge web scraper and API duplicated logic (version parsing, download url handling)
-    try {
-      final body = jsonDecode(downloadRes.body);
-      if (body is Map<String, dynamic>) {
-        final url = body['url'] ?? body['download_url'] ?? body['direct_url'];
-        _log('asset-url: decoded download field url=$url');
-        return url?.toString();
-      }
-    } catch (_) {
-      // Unexpected - ignore and fall back.
-      _log('asset-url: [ERROR] json decode failed for download endpoint; falling back');
+    if (downloadRes.statusCode != 200) throw getObtainiumHttpError(downloadRes);
+
+    final body = jsonDecode(downloadRes.body);
+    if (body is Map<String, dynamic>) {
+      final url = body['url'] ?? body['download_url'] ?? body['direct_url'];
+      print('asset-url: decoded download field url=$url');
+      return url.toString();
     }
-    _log('asset-url: [ERROR] no usable url in response; falling back');
-    return null;
+    throw APIError('Failed to resolve asset URL via API');
   }
 }
 
