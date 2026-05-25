@@ -714,6 +714,7 @@ class _ItchIoWebScraper {
 
     var streamRes = await sourceRequestStreamResponse('GET', directUrl, {
       'Referer': baseUrl.resolve('download').toString(),
+      ...?await source.getRequestHeaders(additionalSettings, directUrl),
     }, additionalSettings);
 
     // Peek into the Content-Disposition header
